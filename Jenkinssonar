@@ -1,70 +1,83 @@
 pipeline {
     agent any
+    
     environment {
         AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
         AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
         AWS_DEFAULT_REGION    = 'ap-south-1'
     }
+    
     stages {
         stage('Scanning Stage') {
-            agent {
-                label 'sonar' // Runs on the SonarQube agent
-            }
+            agent { label 'sonar' } // Runs on the SonarQube agent
             steps {
-             withSonarQubeEnv('spring') { 
-                    sh "mvn clean verify sonar:sonar -Dsonar.projectKey=spring"
+                withSonarQubeEnv('spring') { 
+                    sh """
+                        mvn clean verify sonar:sonar \
+                        -Dsonar.projectKey=spring
+                    """
                 } 
-             }
-          }
-        stage('Build Stage') {
-            agent {
-                label 'master' // Runs on the Jenkisn Master Node
             }
+        }
+        
+        stage('Build Stage') {
+            agent { label 'master' } // Runs on the Jenkins Master Node
             steps {
                 sh 'mvn clean install'
             }
+            
             post {
                 success {
                     script {
-                        def server = Artifactory.newServer(url: 'http://13.201.3.1:8081/artifactory/', credentialsId: 'jfrog')
+                        def server = Artifactory.newServer(
+                            url: 'http://13.201.3.1:8081/artifactory/', 
+                            credentialsId: 'jfrog'
+                        )
+                        
                         def rtMaven = Artifactory.newMavenBuild()
-                        rtMaven.deployer server: server, releaseRepo: 'libs-release/', snapshotRepo: 'libs-snapshot/'
+                        rtMaven.deployer server: server, 
+                                         releaseRepo: 'libs-release/', 
+                                         snapshotRepo: 'libs-snapshot/'
                         rtMaven.tool = 'maven'
                         rtMaven.run(pom: 'pom.xml', goals: 'clean install')
                     }
                 }
             }
         }
+        
         stage('Deploy and Push to ECR') {
-            agent {
-                label 'deploy'    // Runs on the Deploy agent
-            }
+            agent { label 'deploy' } // Runs on the Deploy agent
             steps {
                 script {
                     sh 'curl -o jenkins-test-2.0.jar http://13.201.3.1:8081/artifactory/libs-release/com/example/jenkins-test/2.0/jenkins-test-2.0.jar'
-                   
-                    sh '''
-                        aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin 585008074858.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+                    
+                    sh """
+                        aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
+                        docker login --username AWS --password-stdin 585008074858.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+                        
                         docker build -t aeman .
                         docker tag aeman:latest 585008074858.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/aeman:latest
                         docker push 585008074858.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/aeman:latest
-
+                        
                         # Update kubeconfig to interact with EKS
                         aws eks update-kubeconfig --region ap-south-1 --name cluster-eksctl
+                        
                         kubectl apply -f manifest.yaml
                         sleep 10
+                        
                         kubectl get pods -n ss-dev
                         kubectl get svc -n ss-dev
-                    '''
+                    """
                 }
             }
         }
+    }
+    
     post {
         always {
             echo "Cleaning up workspace..."
             deleteDir() // Deletes the workspace
         }
     }
-
-    }
 }
+
